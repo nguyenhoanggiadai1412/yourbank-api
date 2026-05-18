@@ -3,14 +3,67 @@ const axios = require('axios');
 const haversine = require('haversine-distance');
 const { URLSearchParams } = require('url')
 const OVERPASS_URL = "https://overpass-api.de/api/interpreter";
+const isCoordinate = (input) => {
+const regex =
+  /^\s*(-?\d+(\.\d+)?)\s*,\s*(-?\d+(\.\d+)?)\s*$/;
 
+  return regex.test(input);
+};
+const normalizeCoordinates = (input) => {
+  const [a, b] = input
+    .split(",")
+    .map((v) => parseFloat(v.trim()));
+
+  let lat;
+  let lng;
+
+  if (
+    a >= -90 &&
+    a <= 90 &&
+    b >= -180 &&
+    b <= 180
+  ) {
+    lat = a;
+    lng = b;
+  }
+
+  else if (
+    a >= -180 &&
+    a <= 180 &&
+    b >= -90 &&
+    b <= 90
+  ) {
+    lng = a;
+    lat = b;
+  }
+
+  else {
+    throw new Error("Invalid coordinates");
+  }
+
+  return { lat, lng };
+};
 const geocodeAddress = async (address) => {
   try {
     const apiKey = process.env.GOONG_API_KEY;
 
-    const url = `https://rsapi.goong.io/geocode?address=${encodeURIComponent(
-      address
-    )}&api_key=${apiKey}`;
+    let url = "";
+    let lat;
+    let lng;
+
+    if (isCoordinate(address)) {
+      const { lat: inputLat, lng: inputLng } = normalizeCoordinates(address);
+      lat = inputLat;
+      lng = inputLng;
+
+      url = `https://rsapi.goong.io/Geocode?latlng=${lat},${lng}&api_key=${apiKey}`;
+    }
+
+    else {
+      url = `https://rsapi.goong.io/geocode?address=${encodeURIComponent(
+        address
+      )}&api_key=${apiKey}`;
+    }
 
     const response = await axios.get(url);
 
@@ -21,13 +74,15 @@ const geocodeAddress = async (address) => {
     }
 
     const result = results[0];
-    const lat = result.geometry.location.lat;
-    const lng = result.geometry.location.lng;   
+    if (!lat || !lng) {
+      lat = result.geometry.location.lat;
+      lng = result.geometry.location.lng;
+    }  
     const analytics = await getLocationAnalytics(lat, lng);
     return {
       address: result.formatted_address,
-      lat: result.geometry.location.lat,
-      lng: result.geometry.location.lng,
+      lat,
+      lng,
       placeId: result.place_id,
       analytics: analytics || null
     };
@@ -54,6 +109,8 @@ async function getLocationAnalytics(lat, lon, radius = 1000) {
             (around:10000,${lat},${lon});
         nwr["landuse"="landfill"]
             (around:10000,${lat},${lon});
+        nwr["leisure"="park"]
+          (around:${radius},${lat},${lon});
       );
       out center;
       `;
@@ -91,7 +148,8 @@ async function getLocationAnalytics(lat, lon, radius = 1000) {
               nearPagoda: null,
               nearAirport: null,
               nearRailway: null,
-              nearLandfill: null
+              nearLandfill: null,
+              nearPark: null,
             },
             poiGroups: 0,
             nearbyHighways: new Set(),
@@ -105,8 +163,9 @@ async function getLocationAnalytics(lat, lon, radius = 1000) {
         const airports = [];  
         const railways = [];
         const landfills = [];
+        const parks = [];
         const poiGroups = {schools,hospitals,markets,malls,cemeteries,
-                            pagodas,airports,railways,landfills,
+                            pagodas,airports,railways,landfills,parks
                           };
         elements.forEach(el => {
             const tags = el.tags || {};
@@ -234,6 +293,12 @@ async function getLocationAnalytics(lat, lon, radius = 1000) {
             ) {
               landfills.push(el);
             }
+            // PARK
+            if (
+              tags.leisure === "park"
+            ) {
+              parks.push(el);
+            }
         });
         // 3. Clean Data 
         // results.networkDistance = Array.from(results.nearbyHighways);
@@ -284,6 +349,11 @@ async function getLocationAnalytics(lat, lon, radius = 1000) {
         );
         const nearestLandfill = getNearestDistance(
           landfills,
+          lat,
+          lon
+        );
+        const nearestPark = getNearestDistance(
+          parks,
           lat,
           lon
         );
@@ -392,6 +462,17 @@ async function getLocationAnalytics(lat, lon, radius = 1000) {
                 location: {
                   lat: nearestLandfill.lat ?? nearestLandfill.center?.lat,
                   lon: nearestLandfill.lon ?? nearestLandfill.center?.lon
+                }
+              };
+        results.distance.nearPark =
+          !nearestPark || nearestPark.distance === Infinity
+            ? "Không tìm thấy công viên gần đó"
+            : {
+                name: nearestPark.tags?.name || "Không tên",
+                distance: `${nearestPark.distance.toFixed(1)}m`,
+                location: {
+                  lat: nearestPark.lat ?? nearestPark.center?.lat,
+                  lon: nearestPark.lon ?? nearestPark.center?.lon
                 }
               };
         //poiGroups
